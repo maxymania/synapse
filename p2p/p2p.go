@@ -28,6 +28,7 @@ import (
 	bson "github.com/mad-day/bsonbox/bsoncore"
 	"github.com/maxymania/synapse/proto"
 	"fmt"
+	"sync"
 )
 
 var ECryptoError = fmt.Errorf("p2p: Crypto Error")
@@ -138,6 +139,7 @@ func (c *connServer) serve() {
 		if err!=nil { return }
 	}
 }
+
 func (c *connServer) serveReq() (err error) {
 	var msg,send bson.Document
 	var elems []bson.Element
@@ -222,6 +224,8 @@ type Client struct{
 	appmsg  mqueue
 	filemsg mqueue
 	toks    PathTokenMap
+	
+	pcm     sync.Mutex
 }
 
 func (cc *ClientContext) prepare(conn io.ReadWriteCloser) *Client {
@@ -232,6 +236,10 @@ func (cc *ClientContext) prepare(conn io.ReadWriteCloser) *Client {
 	t.appmsg  = make(mqueue,32)
 	t.filemsg = make(mqueue,8)
 	return t
+}
+
+func (c *Client) lock() func() {
+	c.pcm.Lock(); return c.pcm.Unlock
 }
 
 func (c *Client) reader() {
@@ -277,12 +285,10 @@ func (c *Client) filewriter() {
 		case "dl.start":
 			hdr,ok := elem.Value().DocumentOK()
 			if !ok { goto done }
-			fmt.Println("C",hdr)
 			path := d2path(hdr)
 			token := c.toks.Get(path)
 			c.toks.Put(path,nil)
 			ncf,err := c.Target.Create(token,path)
-			fmt.Println("Open(",token,path,")",err)
 			if err!=nil { goto done }
 			setFile(ncf)
 		case "dl.bin":
@@ -311,7 +317,13 @@ func (cc *ClientContext) NewClient(conn io.ReadWriteCloser) (*Client,error) {
 	return c,nil
 }
 
-
+func (c *Client) Alive() bool {
+	select {
+	case <- c.alive: return true
+	default: return false
+	}
+	panic("unreachable")
+}
 func (c *Client) readMessage() (bson.Document,error) {
 	select {
 	case msg := <- c.appmsg: return msg,nil
@@ -340,6 +352,7 @@ func (c *Client) AuthStep2(sa *proto.ServerAuth, pub []byte, dom string) (ok boo
 	return
 }
 func (c *Client) step1(sa *proto.ServerAuth) (pl bson.Document, err error) {
+	defer c.lock()()
 	var msg bson.Document
 	err = c.pc.WriteDocument(pack("hs.s1",""))
 	if err!=nil { return }
@@ -351,6 +364,7 @@ func (c *Client) step1(sa *proto.ServerAuth) (pl bson.Document, err error) {
 	return
 }
 func (c *Client) step2(pl bson.Document, sa *proto.ServerAuth) (ok bool,err error) {
+	defer c.lock()()
 	var msg bson.Document
 	err = c.pc.WriteDocument(pack("hs.s2",pl))
 	if err!=nil { return }
@@ -362,12 +376,11 @@ func (c *Client) step2(pl bson.Document, sa *proto.ServerAuth) (ok bool,err erro
 	return
 }
 
-
 func (c *Client) GetFile(tok Token,path Path) (dataerr, err error) {
+	defer c.lock()()
 	var msg bson.Document
 	var elems []bson.Element
 	c.toks.Put(path,tok)
-	fmt.Println("Get",path,c.toks.Get(path),tok)
 	err = c.pc.WriteDocument(pack("getfile",path[0],"f",path[1]))
 	if err!=nil { return }
 	msg,err = c.readMessage()

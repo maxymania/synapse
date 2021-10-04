@@ -21,58 +21,11 @@ SOFTWARE.
 */
 
 
-package p2p
+package globals
 
-import (
-	"io"
-	"sync"
-	"errors"
-)
+// Port for the P2P protocol
+const Port_p2p = "16222"
 
-var ENoDir = errors.New("p2p: Dir not Found")
-var ENoFile = errors.New("p2p: File not Found")
-var EDlRejected = errors.New("p2p: Download Rejected")
-
-type Path [2]string
-
-type FileSystem interface{
-	Open(p Path) (io.ReadCloser,error)
-}
-type FileSystemEx interface{
-	FileSystem
-	Dirs() []string
-	Files(dir string) ([]string,error)
-}
-
-type queueElement struct {
-	fobj io.ReadCloser
-	path Path
-}
-
-type fileQueue chan queueElement
-
-type Token interface{
-}
-
-type TargetStore interface{
-	Create(t Token, p Path) (io.WriteCloser,error)
-}
-
-type PathTokenMap struct{
-	s sync.RWMutex
-	m map[Path]Token
-}
-func (m *PathTokenMap) Get(p Path) (t Token) {
-	m.s.RLock(); defer m.s.RUnlock()
-	return m.m[p]
-}
-func (m *PathTokenMap) Put(p Path,t Token) {
-	m.s.Lock(); defer m.s.Unlock()
-	if m.m==nil { m.m = make(map[Path]Token) }
-	if t==nil {
-		delete(m.m,p)
-	} else {
-		m.m[p] = t
-	}
-}
+// Port for the C2S protocol
+const Port_c2s = "16246"
 

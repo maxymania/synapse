@@ -28,6 +28,7 @@ import (
 	bson "github.com/mad-day/bsonbox/bsoncore"
 	"github.com/maxymania/synapse/proto"
 	"fmt"
+	"sync"
 )
 
 var eAuthFailed = fmt.Errorf("c2s: Auth Failed")
@@ -43,6 +44,17 @@ func elookup(elems []bson.Element,n string) (val bson.Value) {
 		break
 	}
 	return
+}
+
+func bdClone(elem bson.Element) bson.Element {
+	nelem := make(bson.Element,len(elem))
+	copy(nelem,elem)
+	return nelem
+}
+func bdClones(elems []bson.Element) {
+	for i := range elems {
+		elems[i] = bdClone(elems[i])
+	}
 }
 
 type Status int32
@@ -144,6 +156,11 @@ func (s *connServer) retract(msg bson.Document, elems []bson.Element) (err error
 }
 
 func (s *connServer) query(msg bson.Document, elems []bson.Element) (err error) {
+	if s.tok.Status()==Rejected {
+		resp := bson.NewDocumentBuilder().Build()
+		err = s.pc.WriteDocument(resp)
+		return
+	}
 	terms,ok := elems[0].Value().DocumentOK()
 	if !ok { return eProtocolError }
 	i := int32(1<<10)
@@ -213,12 +230,16 @@ func (cc *ClientContext) Validate() bool {
 
 type Client struct{
 	*ClientContext
-	Conn *proto.Conn
+	conn *proto.Conn
+	m sync.Mutex
+}
+func (c *Client) lock() func() {
+	c.m.Lock(); return c.m.Unlock
 }
 
 func cfatal(pc **Client,err error) bool {
 	if err==nil { return false }
-	(*pc).Conn.Close()
+	(*pc).conn.Close()
 	*pc = nil
 	return true
 }
@@ -227,30 +248,32 @@ func (c *Client) handshake() (err error) {
 	var recv,send bson.Document
 	send = c.KP.Step1()
 	if send==nil { return eCryptoError }
-	err = c.Conn.WriteDocument(send)
+	err = c.conn.WriteDocument(send)
 	if err!=nil { return }
-	recv,err = c.Conn.ReadDocument()
+	recv,err = c.conn.ReadDocument()
 	if err!=nil { return }
 	send = c.KP.Step2(recv)
 	if send==nil { return eCryptoError }
-	err = c.Conn.WriteDocument(send)
+	err = c.conn.WriteDocument(send)
 	return
 }
 
 
 
 func (cc *ClientContext) NewClient(conn io.ReadWriteCloser) (cli *Client,err error) {
-	cli = &Client{cc,proto.NewConn(conn,cc.Arena)}
+	cli = &Client{ClientContext:cc,conn:proto.NewConn(conn,cc.Arena)}
 	err = cli.handshake()
 	if cfatal(&cli,err) { return }
 	return
 }
 
+func (c *Client) Close() error { return c.conn.Close() }
 func (c *Client) Status() (Status,error) {
+	defer c.lock()()
 	doc := bson.NewDocumentBuilder().AppendString("ready","").Build()
-	err := c.Conn.WriteDocument(doc)
+	err := c.conn.WriteDocument(doc)
 	if err!=nil { return 0,err }
-	resp,err := c.Conn.ReadDocument()
+	resp,err := c.conn.ReadDocument()
 	if err!=nil { return 0,err }
 	i,ok := resp.Lookup("status").Int32OK()
 	if !ok { return 0,eProtocolError }
@@ -258,38 +281,44 @@ func (c *Client) Status() (Status,error) {
 }
 
 func (c *Client) RetractAll() error {
+	defer c.lock()()
 	doc := bson.NewDocumentBuilder().AppendString("sweep","").Build()
-	return c.Conn.WriteDocument(doc)
+	return c.conn.WriteDocument(doc)
 }
 
 func (c *Client) Publish(files []bson.Document) error {
+	defer c.lock()()
 	if len(files)==0 { return nil }
 	db := bson.NewDocumentBuilder().AppendDocument("publish",files[0])
 	for _,f := range files[1:] {
 		db = db.AppendDocument("",f)
 	}
-	return c.Conn.WriteDocument(db.Build())
+	return c.conn.WriteDocument(db.Build())
 }
 
 func (c *Client) Retract(files []bson.Document) error {
+	defer c.lock()()
 	if len(files)==0 { return nil }
 	db := bson.NewDocumentBuilder().AppendDocument("retract",files[0])
 	for _,f := range files[1:] {
 		db = db.AppendDocument("",f)
 	}
-	return c.Conn.WriteDocument(db.Build())
+	return c.conn.WriteDocument(db.Build())
 }
 
 func (c *Client) Query(terms bson.Document,max int) ([]bson.Element,error) {
+	defer c.lock()()
 	db := bson.NewDocumentBuilder().AppendDocument("query",terms)
 	if max>0 { db.AppendInt32("max",int32(max)) }
 	doc := db.Build()
 	fmt.Println("Query",doc)
-	err := c.Conn.WriteDocument(doc)
+	err := c.conn.WriteDocument(doc)
 	if err!=nil { return nil,err }
-	doc,err = c.Conn.ReadDocument()
+	doc,err = c.conn.ReadDocument()
 	if err!=nil { return nil,err }
-	return doc.Elements()
+	elems,err := doc.Elements()
+	bdClones(elems)
+	return elems,err
 }
 
 

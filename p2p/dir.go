@@ -56,11 +56,38 @@ func (d Dir) Open(p Path) (io.ReadCloser,error) {
 	if p[0]!=f { return nil,ENoDir }
 	return os.Open(filepath.Join(string(d),p[1]))
 }
+func (d Dir) Dirs() []string {
+	_,f := filepath.Split(string(d))
+	return []string{f}
+}
+func (d Dir) Files(dir string) ([]string,error) {
+	_,f := filepath.Split(string(d))
+	if dir!=f { return nil,ENoDir }
+	g,err := os.Open(string(d))
+	if err!=nil { return nil,err }
+	defer g.Close()
+	return g.Readdirnames(-1)
+}
 
 type DirColl []Dir
 func (d DirColl) Open(p Path) (r io.ReadCloser,e error) {
 	for _,dd := range d {
 		r,e = dd.Open(p)
+		if e!=ENoDir { break }
+	}
+	return
+}
+func (d DirColl) Dirs() []string {
+	s := make([]string,len(d))
+	for i,dd := range d {
+		_,f := filepath.Split(string(dd))
+		s[i] = f
+	}
+	return s
+}
+func (d DirColl) Files(dir string) (r []string,e error) {
+	for _,dd := range d {
+		r,e = dd.Files(dir)
 		if e!=ENoDir { break }
 	}
 	return
@@ -72,6 +99,19 @@ func (d DirMap) Open(p Path) (r io.ReadCloser,e error) {
 	f,ok := d[p[0]]
 	if ok { return nil,ENoDir }
 	return os.Open(filepath.Join(f,p[1]))
+}
+func (d DirMap) Dirs() (z []string) {
+	z = make([]string,0,len(d))
+	for f := range d { z = append(z,f) }
+	return
+}
+func (d DirMap) Files(dir string) (r []string,e error) {
+	f,ok := d[dir]
+	if ok { return nil,ENoDir }
+	g,err := os.Open(f)
+	if err!=nil { return nil,err }
+	defer g.Close()
+	return g.Readdirnames(-1)
 }
 
 type dfToken int
