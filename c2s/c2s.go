@@ -204,7 +204,6 @@ func (s *Server) Serve(conn io.ReadWriteCloser) {
 	err := t.handshake()
 	if err!=nil { return }
 	t.tok = t.Auth.Login(t.sa.Pub,t.sa.Domain)
-	fmt.Println("t.tok",t.tok)
 	if t.tok==nil { return }
 	defer t.Query.RetractAll(t.tok)
 	for {
@@ -311,7 +310,6 @@ func (c *Client) Query(terms bson.Document,max int) ([]bson.Element,error) {
 	db := bson.NewDocumentBuilder().AppendDocument("query",terms)
 	if max>0 { db.AppendInt32("max",int32(max)) }
 	doc := db.Build()
-	fmt.Println("Query",doc)
 	err := c.conn.WriteDocument(doc)
 	if err!=nil { return nil,err }
 	doc,err = c.conn.ReadDocument()

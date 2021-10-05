@@ -37,8 +37,22 @@ import (
 	"github.com/maxymania/synapse/globals"
 	"time"
 	"sync"
+	"sync/atomic"
+	"strings"
 )
 
+type dcTimer struct{
+	*time.Ticker
+	s uint32
+}
+func (t *dcTimer) Stop() {
+	if atomic.SwapUint32(&t.s,1)==0 {
+		t.Ticker.Stop()
+	}
+}
+func tickerNew(d time.Duration) *dcTimer {
+	return &dcTimer{time.NewTicker(d),0}
+}
 
 func stoploop(ctx context.Context,d time.Duration) bool {
 	select {
@@ -56,10 +70,31 @@ type MetadataAdapter interface{
 	GetMetadata(fs p2p.FileSystem, pth p2p.Path) (bson.Document,error)
 }
 
+type FileFilter interface{
+	HideFile(pth p2p.Path) bool
+}
+func doHide(ff FileFilter, pth p2p.Path) bool {
+	if ff==nil { return false }
+	return ff.HideFile(pth)
+}
+
+type DefaultFileFilter string
+func (dff DefaultFileFilter) HideFile(pth p2p.Path) bool {
+	if strings.HasPrefix(pth[1],".") { return true }
+	if dff=="" { return false }
+	exts := strings.Split(string(dff),";")
+	p := strings.ToLower(pth[1])
+	for _,ext := range exts {
+		if strings.HasSuffix(p,"."+ext) { return false }
+	}
+	return true
+}
+
 type ServentConfig struct{
 	FS     p2p.FileSystemEx
 	TS     p2p.TargetStore
 	MDA    MetadataAdapter
+	FF     FileFilter
 	Arena  proto.Allocator
 	KP     proto.KeyPair
 	Dialer proxy.Dialer
@@ -86,6 +121,7 @@ func wakeup(s chan int) {
 type serverConn struct{
 	cli    *c2s.Client
 	fs     p2p.FileSystemEx
+	ff     FileFilter
 	mda    MetadataAdapter
 	alive  chan int
 	signal chan int
@@ -93,10 +129,11 @@ type serverConn struct{
 	status c2s.Status
 	commit bool
 }
-func serverConn_new(cli *c2s.Client,fs p2p.FileSystemEx, mda MetadataAdapter) (s *serverConn) {
+func serverConn_new(cli *c2s.Client,fs p2p.FileSystemEx, ff FileFilter, mda MetadataAdapter) (s *serverConn) {
 	s = new(serverConn)
 	s.cli = cli
 	s.fs = fs
+	s.ff = ff
 	s.mda = mda
 	s.alive = make(chan int)
 	s.signal = make(chan int,1)
@@ -119,6 +156,7 @@ func (s *serverConn) sendAll() {
 		fils,_ := s.fs.Files(dir)
 		for _,file := range fils {
 			pth := p2p.Path{dir,file}
+			if doHide(s.ff,pth) { continue }
 			doc := bson.Document(nil)
 			if s.mda!=nil {
 				doc,err = s.mda.GetMetadata(s.fs,pth)
@@ -141,6 +179,7 @@ func (s *serverConn) sendMany(pths []p2p.Path) {
 	docs := make([]bson.Document,0,len(pths))
 	var err error
 	for _,pth := range pths {
+		if doHide(s.ff,pth) { continue }
 		doc := bson.Document(nil)
 		if s.mda!=nil {
 			doc,err = s.mda.GetMetadata(s.fs,pth)
@@ -158,6 +197,7 @@ func (s *serverConn) sendMany(pths []p2p.Path) {
 func (s *serverConn) delMany(pths []p2p.Path) {
 	docs := make([]bson.Document,0,len(pths))
 	for _,pth := range pths {
+		if doHide(s.ff,pth) { continue }
 		doc := bson.NewDocumentBuilder().AppendString("_",pth[0]).AppendString("f",pth[1]).Build()
 		docs = append(docs,doc)
 	}
@@ -167,7 +207,9 @@ func (s *serverConn) delMany(pths []p2p.Path) {
 }
 
 func (s *serverConn) serve() {
-	tk := time.NewTicker(time.Second*3)
+	tkc := time.After(time.Nanosecond)
+	// This ticker is a wrapper around time.Ticker that makes it safe to multi-stop it.
+	tk := tickerNew(time.Second)
 	defer tk.Stop()
 	defer close(s.alive)
 	for {
@@ -175,8 +217,9 @@ func (s *serverConn) serve() {
 		case <- s.signal: // liveness-check
 			_,err := s.cli.Status()
 			if err!=nil { return }
-		case <- tk.C: // timer.
-			if s.status!=c2s.Pending { continue } // Done!
+		case <- tkc: // timer.
+			tkc = tk.C
+			if s.status!=c2s.Pending { tk.Stop(); continue } // Done!
 			status2,err := s.cli.Status()
 			if err!=nil { return }
 			s.status = status2
@@ -302,7 +345,7 @@ func (s *Servent) getConnection(domain string) (*serverConn,error){
 	lcli,err := s.idxcli.NewClient(conn)
 	if err!=nil { return nil,err }
 	
-	cli = serverConn_new(lcli,s.FS,s.MDA)
+	cli = serverConn_new(lcli,s.FS,s.FF,s.MDA)
 	
 	s.idxlck.RLock()
 	raw,toolate := s.idxlist.LoadOrStore(domain,cli)
@@ -313,7 +356,7 @@ func (s *Servent) getConnection(domain string) (*serverConn,error){
 		cli.cli.Close()
 		cli = raw.(*serverConn)
 	} else {
-		cli.serve()
+		go cli.serve()
 	}
 	
 	return cli,nil

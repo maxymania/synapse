@@ -25,35 +25,36 @@ package ftse
 
 import (
 	"sync"
-	"github.com/RoaringBitmap/roaring"
+	roaring "github.com/RoaringBitmap/roaring/roaring64"
 )
 
-type MemDir struct{
+// MemDir but with 64 bit roaring bitmaps.
+type MemDir64 struct{
 	m sync.RWMutex
-	f map[string]uint32
+	f map[string]uint64
 	i map[string]*roaring.Bitmap
 	z *roaring.Bitmap
 	s [][]string
 	p []Path
 	b [][]byte
 }
-var _ Dir = (*MemDir)(nil)
+var _ Dir = (*MemDir64)(nil)
 
-func (m *MemDir) lock() func() {
+func (m *MemDir64) lock() func() {
 	m.m.Lock()
 	return m.m.Unlock
 }
-func (m *MemDir) rlock() func() {
+func (m *MemDir64) rlock() func() {
 	m.m.RLock()
 	return m.m.RUnlock
 }
-func (m *MemDir) prepare() {
-	if m.f==nil { m.f = make(map[string]uint32) }
+func (m *MemDir64) prepare() {
+	if m.f==nil { m.f = make(map[string]uint64) }
 	if m.i==nil { m.i = make(map[string]*roaring.Bitmap) }
 	if m.z==nil { m.z = roaring.New() }
 }
-func (m *MemDir) idel(i uint32) {
-	if uint32(len(m.s)) <= i { return }
+func (m *MemDir64) idel(i uint64) {
+	if uint64(len(m.s)) <= i { return }
 	for _,kw := range m.s[i] {
 		b := m.i[kw]
 		if b==nil { continue }
@@ -63,7 +64,7 @@ func (m *MemDir) idel(i uint32) {
 	m.p[i] = Path{}
 }
 
-func (m *MemDir) alloc() (uint32,bool) {
+func (m *MemDir64) alloc() (uint64,bool) {
 	if m.z==nil { return 0,false }
 	if m.z.IsEmpty() { return 0,false }
 	i := m.z.Minimum()
@@ -71,9 +72,9 @@ func (m *MemDir) alloc() (uint32,bool) {
 	return i,true
 }
 
-func (m *MemDir) PutTrack(path Path, keys []string, doc []byte) {
+func (m *MemDir64) PutTrack(path Path, keys []string, doc []byte) {
 	defer m.lock()()
-	var i uint32
+	var i uint64
 	
 	p := path[0]+"/"+path[1]+"/"+path[2]
 	
@@ -81,7 +82,7 @@ func (m *MemDir) PutTrack(path Path, keys []string, doc []byte) {
 	
 	doc = append([]byte(nil),doc...)
 	if j,ok := m.f[p]; ok {
-		i = uint32(j)
+		i = uint64(j)
 		m.idel(i)
 		m.s[i] = keys
 		m.p[i] = path
@@ -92,12 +93,9 @@ func (m *MemDir) PutTrack(path Path, keys []string, doc []byte) {
 		m.p[i] = path
 		m.b[i] = doc
 		m.f[p] = i
-	} else if len(m.s)>0xFFFFFFFF {
-		// We ran out of 32-bit indeces!
-		return
 	} else {
 		m.f[p] = i
-		i = uint32(len(m.s))
+		i = uint64(len(m.s))
 		m.s = append(m.s,keys)
 		m.p = append(m.p,path)
 		m.b = append(m.b,doc)
@@ -113,7 +111,7 @@ func (m *MemDir) PutTrack(path Path, keys []string, doc []byte) {
 	}
 }
 
-func (m *MemDir) DelTrack(path Path) {
+func (m *MemDir64) DelTrack(path Path) {
 	defer m.lock()()
 	
 	p := path[0]+"/"+path[1]+"/"+path[2]
@@ -127,7 +125,7 @@ func (m *MemDir) DelTrack(path Path) {
 	}
 }
 
-func (m *MemDir) DelAll(domain string) {
+func (m *MemDir64) DelAll(domain string) {
 	defer m.lock()()
 	
 	m.prepare()
@@ -144,7 +142,7 @@ func (m *MemDir) DelAll(domain string) {
 	}
 }
 
-func (m *MemDir) Lookup(keys []string, max int) []Result {
+func (m *MemDir64) Lookup(keys []string, max int) []Result {
 	defer m.rlock()()
 	
 	imb := make([]*roaring.Bitmap,len(keys))
@@ -158,7 +156,7 @@ func (m *MemDir) Lookup(keys []string, max int) []Result {
 	pth := make([]Result,0,res.GetCardinality())
 	iter := res.Iterator()
 	
-	L := uint32(len(m.p))
+	L := uint64(len(m.p))
 	
 	for iter.HasNext() {
 		i := iter.Next()
