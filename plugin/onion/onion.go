@@ -43,7 +43,7 @@ func bindToAnyPort() (l net.Listener,port int,err error) {
 	for i := 0 ; i<25 ; i++ {
 		port = rand.Intn(32000)+16000
 		l,err = net.Listen("tcp",fmt.Sprint(":",port))
-		if err!=nil { break }
+		if err==nil { break }
 	}
 	return
 }
